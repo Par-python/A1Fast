@@ -2,12 +2,14 @@
 import os
 import time
 from PyQt6.QtWidgets import (
-    QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel, QHBoxLayout, QComboBox
+    QMainWindow, QPushButton, QVBoxLayout, QWidget, QLabel, QHBoxLayout, QComboBox,
+    QLineEdit, QMessageBox
 )
 from PyQt6.QtCore import QTimer
 from telemetry.listener import TelemetryListener
 from telemetry.simulator import TrackSimulator
 from telemetry.storage import SessionWriter
+from telemetry.upload import upload_session
 import threading
 import queue
 
@@ -53,6 +55,18 @@ class MainWindow(QMainWindow):
         self.stop_session_btn = QPushButton("Stop Session Recording")
         self.stop_session_btn.clicked.connect(self.stop_session)
         self.stop_session_btn.setEnabled(False)
+        
+        # Upload functionality
+        self.driver_name_input = QLineEdit()
+        self.driver_name_input.setPlaceholderText("Driver Name")
+        self.driver_name_input.setText("Default Driver")
+        
+        self.backend_url_input = QLineEdit()
+        self.backend_url_input.setPlaceholderText("Backend URL")
+        self.backend_url_input.setText("http://localhost:8000")
+        
+        self.upload_btn = QPushButton("Upload Last Session")
+        self.upload_btn.clicked.connect(self.upload_last_session)
 
         # layout
         v = QVBoxLayout()
@@ -75,6 +89,11 @@ class MainWindow(QMainWindow):
         h3.addWidget(self.save_session_btn)
         h3.addWidget(self.stop_session_btn)
         v.addLayout(h3)
+        
+        v.addWidget(QLabel("Upload to Backend:"))
+        v.addWidget(self.driver_name_input)
+        v.addWidget(self.backend_url_input)
+        v.addWidget(self.upload_btn)
 
         container = QWidget()
         container.setLayout(v)
@@ -159,3 +178,60 @@ class MainWindow(QMainWindow):
             # write to session if active
             if self.session_writer:
                 self.session_writer.write(popped)
+    
+    def upload_last_session(self):
+        """Upload the most recent session file to the backend."""
+        if not self.current_session_path:
+            # Try to find the latest session file
+            from pathlib import Path
+            sessions_dir = Path("sessions")
+            if not sessions_dir.exists():
+                QMessageBox.warning(self, "No Session", "No session files found. Please record a session first.")
+                return
+            
+            session_files = sorted(
+                sessions_dir.glob("session_*.jsonl.gz"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            if not session_files:
+                QMessageBox.warning(self, "No Session", "No session files found. Please record a session first.")
+                return
+            session_path = str(session_files[0])
+        else:
+            session_path = self.current_session_path
+        
+        driver_name = self.driver_name_input.text() or "Default Driver"
+        backend_url = self.backend_url_input.text() or "http://localhost:8000"
+        
+        self.upload_btn.setEnabled(False)
+        self.upload_btn.setText("Uploading...")
+        
+        def do_upload():
+            try:
+                result = upload_session(
+                    session_path=session_path,
+                    backend_url=backend_url,
+                    driver_name=driver_name
+                )
+                if result:
+                    QMessageBox.information(
+                        self,
+                        "Upload Success",
+                        f"Session uploaded successfully!\n\n"
+                        f"ID: {result.get('id', 'N/A')}\n"
+                        f"Driver: {result.get('driver_name', 'N/A')}\n"
+                        f"Car: {result.get('car', 'N/A')}\n"
+                        f"Track: {result.get('track', 'N/A')}"
+                    )
+                else:
+                    QMessageBox.warning(self, "Upload Failed", "Failed to upload session. Check backend connection.")
+            except Exception as e:
+                QMessageBox.critical(self, "Upload Error", f"Error during upload:\n{str(e)}")
+            finally:
+                self.upload_btn.setEnabled(True)
+                self.upload_btn.setText("Upload Last Session")
+        
+        # Run upload in a separate thread to avoid blocking UI
+        upload_thread = threading.Thread(target=do_upload, daemon=True)
+        upload_thread.start()
