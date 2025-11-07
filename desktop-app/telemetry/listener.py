@@ -3,6 +3,9 @@ import socket
 import json
 import time
 
+
+#we will listen to this later on 
+
 class TelemetryListener:
     def __init__(self, port=9996, out_queue=None):
         self.port = port
